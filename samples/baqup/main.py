@@ -29,6 +29,7 @@ import sys
 import urllib2
 import xml.etree.cElementTree
 import xml.sax.saxutils
+import time
 
 reload(sys)
 sys.setdefaultencoding('utf8')
@@ -49,32 +50,32 @@ def main():
 
     parser.add_argument("--access_token", required=True,
         help="Access token for the user whose account should be backed up")
-    parser.add_argument("--root_folder_id", default=None,
+    parser.add_argument("--src_root_folder_id", default=None,
         help="If provided, only the documents in the given folder will be "
              "backed up. Otherwise all folder and documents will be backed up.")
-    parser.add_argument("--quip_api_base_url", default=None,
+    parser.add_argument("--quip_api_base_url", default="https://platform.quip.com",
         help="Alternative base URL for the Quip API. If none is provided, "
              "https://platform.quip.com will be used")
-    parser.add_argument("--output_directory", default="./",
-        help="Directory where to place backup data.")
+    parser.add_argument("--dest_root_folder_id", required=True,
+        help="Private quip directory where to place backup data.")
 
     args = parser.parse_args()
-
+    print(args.access_token, args.quip_api_base_url)
     client = quip.QuipClient(
         access_token=args.access_token, base_url=args.quip_api_base_url,
         request_timeout=120)
-    output_directory = os.path.join(
-        _normalize_path(args.output_directory), "baqup")
-    _ensure_path_exists(output_directory)
-    shutil.rmtree(output_directory, ignore_errors=True)
-    output_static_diretory = os.path.join(
-        output_directory, _OUTPUT_STATIC_DIRECTORY_NAME)
-    shutil.copytree(_STATIC_DIRECTORY, output_static_diretory)
-    _run_backup(client, output_directory, args.root_folder_id)
+    # output_directory = os.path.join(
+    #     _normalize_path(args.output_directory), "baqup")
+    # _ensure_path_exists(output_directory)
+    # shutil.rmtree(output_directory, ignore_errors=True)
+    # output_static_diretory = os.path.join(
+    #     output_directory, _OUTPUT_STATIC_DIRECTORY_NAME)
+    # shutil.copytree(_STATIC_DIRECTORY, output_static_diretory)
+    _run_backup(client, args.dest_root_folder_id, args.src_root_folder_id)
 
 def _run_backup(client, output_directory, root_folder_id):
-    user = client.get_authenticated_user()
-    processed_folder_ids = set()
+    # user = client.get_authenticated_user()
+    processed_folder_ids = set('BDaAOAZJPtG')
     if root_folder_id:
         _descend_into_folder(root_folder_id, processed_folder_ids,
             client, output_directory, 0)
@@ -83,16 +84,28 @@ def _run_backup(client, output_directory, root_folder_id):
             client, output_directory, 0)
         _descend_into_folder(user["starred_folder_id"], processed_folder_ids,
             client, output_directory, 0)
-    logging.info("Looking for conversations")
-    conversation_threads = _get_conversation_threads(client)
-    if conversation_threads:
-        conversations_directory = os.path.join(output_directory, "Conversations")
-        _ensure_path_exists(conversations_directory)
-        for thread in conversation_threads:
-            _backup_thread(thread, client, conversations_directory, 1)
+
+# def _run_backup(client, output_directory, root_folder_id):
+#     user = client.get_authenticated_user()
+#     processed_folder_ids = set()
+#     if root_folder_id:
+#         _descend_into_folder(root_folder_id, processed_folder_ids,
+#             client, output_directory, 0)
+#     else:
+#         _descend_into_folder(user["private_folder_id"], processed_folder_ids,
+#             client, output_directory, 0)
+#         _descend_into_folder(user["starred_folder_id"], processed_folder_ids,
+#             client, output_directory, 0)
+#     logging.info("Looking for conversations")
+#     conversation_threads = _get_conversation_threads(client)
+#     if conversation_threads:
+#         conversations_directory = os.path.join(output_directory, "Conversations")
+#         _ensure_path_exists(conversations_directory)
+#         for thread in conversation_threads:
+#             _backup_thread(thread, client, conversations_directory, 1)
 
 def _descend_into_folder(folder_id, processed_folder_ids, client,
-        output_directory, depth):
+        dest_parent_id, depth):
     if folder_id in processed_folder_ids:
         return
     processed_folder_ids.add(folder_id)
@@ -111,16 +124,43 @@ def _descend_into_folder(folder_id, processed_folder_ids, client,
             "  " * depth, folder_id, e.code)
         return
     title = folder["folder"].get("title", "Folder %s" % folder_id)
-    logging.info("%sBacking up folder %s...", "  " * depth, title)
-    folder_output_path = os.path.join(output_directory, _sanitize_title(title))
-    _ensure_path_exists(folder_output_path)
+    color = folder["folder"].get("color", "manila")
+    
+    try:
+        logging.info("%sCreating new folder %s...", "  " * depth, title)
+        dest_folder = client.new_folder(title, parent_id=dest_parent_id, color=color)
+    except quip.QuipError as e:
+        logging.warning("%sSkipped over creating new folder from %s.", " " * depth, dest_parent_id)
+        return
+    except urllib2.HTTPError as e:
+        logging.warning("%sSkipped over creating new folder from %s due to HTTP error %d.",
+            "  " * depth, dest_parent_id, e.code)
+        return
+    dest_folder_id = dest_folder["folder"].get("id", None)
+    logging.info("%sBacking up folder %s from (%s) to (%s)...", "  " * depth, title, folder_id, dest_folder_id)
+    # folder_output_path = os.path.join(output_directory, _sanitize_title(title))
+    # _ensure_path_exists(folder_output_path)
     for child in folder["children"]:
+        time.sleep(1)
         if "folder_id" in child:
             _descend_into_folder(child["folder_id"], processed_folder_ids,
-                client, folder_output_path, depth + 1)
+                client, dest_folder_id, depth + 1)
         elif "thread_id" in child:
             thread = client.get_thread(child["thread_id"])
-            _backup_thread(thread, client, folder_output_path, depth + 1)
+            title = thread["thread"]["title"]
+            try:
+                logging.info("%sCopy document %s...", "  " * depth, title)
+                client.copy_document(child["thread_id"], folder_ids=[dest_folder_id])
+            except quip.QuipError as e:
+                print(e)
+                logging.warning("%sSkipped over copy document.", " " * depth)
+                continue
+            except urllib2.HTTPError as e:
+                print(e)
+                logging.warning("%sSkipped over copy document due to HTTP error %d.",
+                    "  " * depth, e.code)
+                continue
+            # _backup_thread(thread, client, folder_output_path, depth + 1)
 
 def _backup_thread(thread, client, output_directory, depth):
     thread_id = thread["thread"]["id"]
