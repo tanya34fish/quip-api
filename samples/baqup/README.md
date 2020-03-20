@@ -1,6 +1,6 @@
 # Local Quip Backup
 
-Simple command-line script that copy a source directory to a specific directory in your Private folder, based on what data can be exported via the API.
+Simple command-line script that copy a source directory to a specific directory in your Private folder, based on what data can be exported via the API. To more understand the API, please go to [here](https://quip.com/dev/automation/documentation).
 
 ## Running
 
